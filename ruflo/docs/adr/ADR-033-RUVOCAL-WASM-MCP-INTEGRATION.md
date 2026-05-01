@@ -114,6 +114,27 @@ Validation after deploy: `npx agent-browser open <run-url>` then check console f
 
 The thin `ruflo/src/chat-ui/Dockerfile` wrapper (FROM `ghcr.io/huggingface/chat-ui-db:latest`) is **unsuitable** for deploying this integration — it can only patch the upstream HF base image with a few static files; it cannot include compiled WASM source. The full ruvocal Dockerfile build is required.
 
+## Deployment Outcome (2026-05-01)
+
+The Cloud Run pipeline is working end-to-end with the following validations:
+
+| Stage | Result |
+|-------|--------|
+| Cloud Build (after `DOCKER_BUILDKIT=1` fix) | Succeeds: `gcr.io/ruv-dev/ruvocal:v1` pushed |
+| Cloud Run deploy (after granting `secretmanager.secretAccessor` to default SA on `ANTHROPIC_API_KEY`, `GOOGLE_AI_API_KEY`, `OPENROUTER_API_KEY`) | Service `ruvocal` revision `00007-4hd` serving 100% traffic |
+| Embedded MongoDB (`INCLUDE_DB=true`) | Working: `mongod` starts via `entrypoint.sh`, `/api/v2/conversations`, `/api/v2/user`, `/api/v2/feature-flags`, `/api/v2/public-config`, `/api/v2/user/settings` all return 200 |
+| WASM bundle | Reachable: `https://ruvocal-875130704813.us-central1.run.app/wasm/rvagent_wasm.js` (200, `text/javascript`), `/wasm/rvagent_wasm_bg.wasm` (200, `application/wasm`, 543 KB) |
+| Provider API keys via Secret Manager | Mounted at runtime as `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY` |
+| `dotenv-cli` runtime overrides via `DOTENV_LOCAL` env var | Working — confirmed by `PUBLIC_ORIGIN` and `OPENAI_BASE_URL` taking effect at runtime |
+
+### Known Issue (Out of Scope)
+
+The homepage `/` returns HTTP 500 in production due to the `/api/v2/models` and `/api/v2/models/refresh` routes returning the SvelteKit "Page not found" page wrapped in a 500 status. Other `/api/v2/*` routes work normally. This is reproducible across multiple Cloud Run revisions and across both HuggingFace router and OpenRouter as the upstream provider — but does **not** reproduce locally with `npm run dev` using the same `.env`.
+
+The error stack consistently points at `handleResponse (file:///app/build/server/chunks/APIClient-bd1S52Pj.js:421:11)` from the `+layout.ts` server-side `Promise.all` (index 1 = `client.models.get()`). The `models.ts` server module does refresh successfully (logs show `[models] Parsed models count: 129`, `[models] Model cache refreshed`) — the issue is between cache build and route response, specific to the production `adapter-node` build.
+
+This is unrelated to the WASM-MCP integration that this ADR covers; the WASM client code is shipped and serves correctly. The 500 is an HF chat-ui / SvelteKit production-build edge case worth a separate investigation (likely candidates: `superjson.stringify` over `getEndpoint` closures, a circular import in `chunks/models.js`, or route matcher caching for the `/api/v2/models` subtree).
+
 ## References
 
 - Upstream source: `https://github.com/ruvnet/ruvector` → `ui/ruvocal/`
